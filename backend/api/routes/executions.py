@@ -2,7 +2,7 @@
 API routes for test execution management
 """
 from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
-from typing import Dict, List
+from typing import Dict, List, Any
 
 from core.models import (
     ExecutionRequest,
@@ -28,6 +28,21 @@ async def execute_agent(
     marketplace = request.app.state.marketplace
 
     try:
+        # Validate agent type exists
+        if execution_request.agent_type not in marketplace.agents:
+            available_agents = ', '.join([str(at.value) for at in marketplace.agents.keys()])
+            raise HTTPException(
+                status_code=404,
+                detail=f"Agent type '{execution_request.agent_type}' not found. Available agents: {available_agents}"
+            )
+
+        # Validate inputs are provided
+        if not execution_request.inputs:
+            raise HTTPException(
+                status_code=400,
+                detail="Inputs are required for agent execution"
+            )
+
         execution_id = await marketplace.execute_agent(
             agent_type=execution_request.agent_type,
             inputs=execution_request.inputs,
@@ -37,10 +52,17 @@ async def execute_agent(
         return {
             "execution_id": execution_id,
             "status": "started",
-            "message": f"Agent {execution_request.agent_type} execution started"
+            "message": f"Agent {execution_request.agent_type} execution started successfully"
         }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to start execution: {str(e)}"
+        )
 
 
 @router.post("/execute/batch")
@@ -55,16 +77,43 @@ async def execute_batch(
     marketplace = request.app.state.marketplace
 
     try:
+        # Validate batch request
+        if not batch_request.executions or len(batch_request.executions) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="At least one execution is required in batch request"
+            )
+
+        # Validate all agent types exist
+        invalid_agents = []
+        for exec_req in batch_request.executions:
+            if exec_req.agent_type not in marketplace.agents:
+                invalid_agents.append(str(exec_req.agent_type.value))
+
+        if invalid_agents:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Invalid agent types: {', '.join(invalid_agents)}"
+            )
+
         execution_ids = await marketplace.execute_batch(batch_request)
 
         return {
             "executions": execution_ids,
             "status": "started",
             "parallel": batch_request.parallel,
-            "total_agents": len(execution_ids)
+            "total_agents": len(execution_ids),
+            "message": f"Successfully started {len(execution_ids)} agent execution(s)"
         }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to start batch execution: {str(e)}"
+        )
 
 
 @router.get("/{execution_id}/status")
@@ -77,7 +126,10 @@ async def get_execution_status(
     status = marketplace.get_execution_status(execution_id)
 
     if status is None:
-        raise HTTPException(status_code=404, detail="Execution not found")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Execution '{execution_id}' not found"
+        )
 
     return {
         "execution_id": execution_id,
@@ -99,7 +151,10 @@ async def get_execution_result(
         result = await storage.load_execution_result(execution_id)
 
     if not result:
-        raise HTTPException(status_code=404, detail="Execution result not found")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Execution result for '{execution_id}' not found"
+        )
 
     return result
 
@@ -117,12 +172,13 @@ async def cancel_execution(
     if not success:
         raise HTTPException(
             status_code=404,
-            detail="Execution not found or already completed"
+            detail=f"Execution '{execution_id}' not found or already completed"
         )
 
     return {
         "execution_id": execution_id,
-        "status": "cancelled"
+        "status": "cancelled",
+        "message": "Execution cancelled successfully"
     }
 
 

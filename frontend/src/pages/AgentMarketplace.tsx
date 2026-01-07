@@ -1,38 +1,74 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { agentsApi, executionsApi, AgentMetadata, AgentInput } from '@/lib/api'
-import { Play, CheckCircle2, Clock, Upload, AlertCircle, X, Loader2 } from 'lucide-react'
+import { Play, CheckCircle2, Clock, Upload, AlertCircle, X, Loader2, FileText, Trash2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+
+interface UploadedFile {
+  name: string
+  size: number
+  uploadedAt: Date
+}
 
 export function AgentMarketplace() {
   const [selectedAgents, setSelectedAgents] = useState<Set<string>>(new Set())
   const [inputs, setInputs] = useState<Record<string, AgentInput>>({})
+  const [uploadedFiles, setUploadedFiles] = useState<Record<string, Record<string, UploadedFile>>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
-  const { data: agents, isLoading } = useQuery({
+  const { data: agents, isLoading, error: agentsError } = useQuery({
     queryKey: ['agents'],
-    queryFn: () => agentsApi.list().then((res) => res.data),
+    queryFn: async () => {
+      console.log('Fetching agents from API...')
+      try {
+        const response = await agentsApi.list()
+        console.log('Agents fetched successfully:', response.data)
+        return response.data
+      } catch (error) {
+        console.error('Failed to fetch agents:', error)
+        throw error
+      }
+    },
   })
 
   const executeMutation = useMutation({
     mutationFn: async (agentTypes: string[]) => {
+      console.log('Starting execution for agents:', agentTypes)
+      console.log('Inputs:', inputs)
+
       const requests = agentTypes.map((type) => ({
         agent_type: type,
         inputs: inputs[type] || {},
       }))
 
-      if (requests.length === 1) {
-        return executionsApi.execute(requests[0])
+      console.log('Execution requests:', requests)
+
+      try {
+        if (requests.length === 1) {
+          console.log('Executing single agent')
+          const response = await executionsApi.execute(requests[0])
+          console.log('Single execution response:', response.data)
+          return response.data
+        } else {
+          console.log('Executing batch')
+          const response = await executionsApi.executeBatch(requests, true)
+          console.log('Batch execution response:', response.data)
+          return response.data
+        }
+      } catch (error) {
+        console.error('Execution error:', error)
+        throw error
       }
-      return executionsApi.executeBatch(requests, true)
     },
     onSuccess: (data) => {
+      console.log('Execution started successfully:', data)
       showToast('Tests started successfully! Redirecting to execution monitor...', 'success')
       setSelectedAgents(new Set())
       setInputs({})
+      setUploadedFiles({})
       setErrors({})
       queryClient.invalidateQueries({ queryKey: ['executions'] })
 
@@ -42,18 +78,20 @@ export function AgentMarketplace() {
       }, 2000)
     },
     onError: (error: any) => {
+      console.error('Execution mutation error:', error)
       const errorMessage = error?.response?.data?.detail || error?.message || 'Failed to start execution'
       showToast(`Error: ${errorMessage}`, 'error')
-      console.error('Execution error:', error)
     },
   })
 
   const showToast = (message: string, type: 'success' | 'error') => {
+    console.log(`Toast: [${type}] ${message}`)
     setToast({ message, type })
     setTimeout(() => setToast(null), 5000)
   }
 
   const validateInputs = (): boolean => {
+    console.log('Validating inputs...')
     const newErrors: Record<string, string> = {}
     let hasErrors = false
 
@@ -62,6 +100,7 @@ export function AgentMarketplace() {
       if (!agent) return
 
       const agentInputs = inputs[agentType] || {}
+      console.log(`Validating inputs for ${agentType}:`, agentInputs)
 
       // Check required inputs
       agent.required_inputs.forEach((requiredInput) => {
@@ -91,6 +130,7 @@ export function AgentMarketplace() {
       }
     })
 
+    console.log('Validation errors:', newErrors)
     setErrors(newErrors)
     return !hasErrors
   }
@@ -99,10 +139,14 @@ export function AgentMarketplace() {
     const newSelected = new Set(selectedAgents)
     if (newSelected.has(agentType)) {
       newSelected.delete(agentType)
-      // Clear inputs and errors for deselected agent
+      // Clear inputs, files, and errors for deselected agent
       const newInputs = { ...inputs }
       delete newInputs[agentType]
       setInputs(newInputs)
+
+      const newFiles = { ...uploadedFiles }
+      delete newFiles[agentType]
+      setUploadedFiles(newFiles)
 
       const newErrors = { ...errors }
       Object.keys(newErrors).forEach(key => {
@@ -118,6 +162,10 @@ export function AgentMarketplace() {
   }
 
   const handleExecute = () => {
+    console.log('Execute button clicked')
+    console.log('Selected agents:', Array.from(selectedAgents))
+    console.log('Current inputs:', inputs)
+
     if (selectedAgents.size === 0) {
       showToast('Please select at least one agent', 'error')
       return
@@ -128,7 +176,30 @@ export function AgentMarketplace() {
       return
     }
 
+    console.log('Starting execution...')
     executeMutation.mutate(Array.from(selectedAgents))
+  }
+
+  // Check for backend connectivity
+  if (agentsError) {
+    return (
+      <div className="flex flex-col items-center justify-center py-12 space-y-4">
+        <AlertCircle className="h-12 w-12 text-red-500" />
+        <h3 className="text-lg font-semibold text-gray-900">Backend Connection Error</h3>
+        <p className="text-sm text-gray-600 text-center max-w-md">
+          Cannot connect to the backend API. Please ensure the backend server is running on port 8000.
+        </p>
+        <div className="text-xs text-gray-500 font-mono bg-gray-100 p-3 rounded">
+          Error: {agentsError.message}
+        </div>
+        <button
+          onClick={() => window.location.reload()}
+          className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+        >
+          Retry Connection
+        </button>
+      </div>
+    )
   }
 
   if (isLoading) {
@@ -198,6 +269,16 @@ export function AgentMarketplace() {
         </button>
       </div>
 
+      {/* Debug Panel - Remove in production */}
+      {process.env.NODE_ENV === 'development' && (
+        <div className="bg-gray-800 text-white p-4 rounded-lg text-xs font-mono">
+          <div className="font-bold mb-2">Debug Info:</div>
+          <div>Selected: {Array.from(selectedAgents).join(', ') || 'none'}</div>
+          <div>Inputs: {JSON.stringify(inputs)}</div>
+          <div>Pending: {executeMutation.isPending ? 'true' : 'false'}</div>
+        </div>
+      )}
+
       {/* Selected Agents Summary */}
       {selectedAgents.size > 0 && (
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
@@ -214,6 +295,7 @@ export function AgentMarketplace() {
               onClick={() => {
                 setSelectedAgents(new Set())
                 setInputs({})
+                setUploadedFiles({})
                 setErrors({})
               }}
               className="text-sm text-blue-600 hover:text-blue-700 font-medium"
@@ -236,6 +318,24 @@ export function AgentMarketplace() {
             onInputsChange={(newInputs) =>
               setInputs({ ...inputs, [agent.agent_type]: newInputs })
             }
+            uploadedFiles={uploadedFiles[agent.agent_type] || {}}
+            onFileUploaded={(fieldName, file) => {
+              setUploadedFiles({
+                ...uploadedFiles,
+                [agent.agent_type]: {
+                  ...(uploadedFiles[agent.agent_type] || {}),
+                  [fieldName]: file
+                }
+              })
+            }}
+            onFileRemoved={(fieldName) => {
+              const agentFiles = { ...(uploadedFiles[agent.agent_type] || {}) }
+              delete agentFiles[fieldName]
+              setUploadedFiles({
+                ...uploadedFiles,
+                [agent.agent_type]: agentFiles
+              })
+            }}
             errors={errors}
           />
         ))}
@@ -250,6 +350,9 @@ function AgentCard({
   onToggle,
   inputs,
   onInputsChange,
+  uploadedFiles,
+  onFileUploaded,
+  onFileRemoved,
   errors,
 }: {
   agent: AgentMetadata
@@ -257,6 +360,9 @@ function AgentCard({
   onToggle: () => void
   inputs?: AgentInput
   onInputsChange: (inputs: AgentInput) => void
+  uploadedFiles: Record<string, UploadedFile>
+  onFileUploaded: (fieldName: string, file: UploadedFile) => void
+  onFileRemoved: (fieldName: string) => void
   errors: Record<string, string>
 }) {
   const [showInputs, setShowInputs] = useState(false)
@@ -268,6 +374,8 @@ function AgentCard({
     const file = e.target.files?.[0]
     if (!file) return
 
+    console.log(`Uploading file for ${fieldName}:`, file.name, file.size)
+
     // Validate file size (max 10MB)
     if (file.size > 10 * 1024 * 1024) {
       alert('File size must be less than 10MB')
@@ -276,18 +384,42 @@ function AgentCard({
 
     try {
       const text = await file.text()
+      console.log(`File ${file.name} read successfully, length: ${text.length}`)
+
       onInputsChange({
         ...inputs,
         [fieldName]: text,
       })
+
+      onFileUploaded(fieldName, {
+        name: file.name,
+        size: file.size,
+        uploadedAt: new Date()
+      })
+
+      console.log(`File uploaded successfully for ${fieldName}`)
     } catch (error) {
       console.error('Error reading file:', error)
       alert('Failed to read file')
     }
   }
 
+  const handleFileRemove = (fieldName: string) => {
+    onInputsChange({
+      ...inputs,
+      [fieldName]: undefined,
+    })
+    onFileRemoved(fieldName)
+  }
+
   const getErrorForField = (fieldName: string): string | undefined => {
     return errors[`${agent.agent_type}_${fieldName}`]
+  }
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes < 1024) return bytes + ' B'
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
   }
 
   return (
@@ -354,37 +486,62 @@ function AgentCard({
                 {agent.required_inputs.includes('source_code') && (
                   <div>
                     <label className="block text-xs font-medium text-gray-700 mb-1">
-                      Source Code {agent.required_inputs.includes('source_code') && <span className="text-red-500">*</span>}
+                      Source Code <span className="text-red-500">*</span>
                     </label>
-                    <textarea
-                      className={`w-full px-3 py-2 text-sm border rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                        getErrorForField('source_code') ? 'border-red-300' : 'border-gray-300'
-                      }`}
-                      rows={3}
-                      placeholder="Paste source code or upload file..."
-                      value={inputs?.source_code || ''}
-                      onChange={(e) =>
-                        onInputsChange({
-                          ...inputs,
-                          source_code: e.target.value,
-                        })
-                      }
-                    />
-                    <div className="mt-1 flex items-center justify-between">
-                      <label className="cursor-pointer text-xs text-blue-600 hover:text-blue-700 flex items-center">
-                        <Upload className="h-3 w-3 mr-1" />
-                        Upload file
-                        <input
-                          type="file"
-                          className="hidden"
-                          accept=".py,.js,.ts,.java,.cpp,.c,.go,.rb,.php"
-                          onChange={(e) => handleFileUpload(e, 'source_code')}
+
+                    {uploadedFiles['source_code'] ? (
+                      <div className="flex items-center justify-between p-2 bg-green-50 border border-green-200 rounded-md">
+                        <div className="flex items-center space-x-2 flex-1 min-w-0">
+                          <FileText className="h-4 w-4 text-green-600 flex-shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-xs font-medium text-green-900 truncate">
+                              {uploadedFiles['source_code'].name}
+                            </div>
+                            <div className="text-xs text-green-600">
+                              {formatFileSize(uploadedFiles['source_code'].size)}
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleFileRemove('source_code')}
+                          className="ml-2 p-1 text-red-600 hover:bg-red-100 rounded"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <textarea
+                          className={`w-full px-3 py-2 text-sm border rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                            getErrorForField('source_code') ? 'border-red-300' : 'border-gray-300'
+                          }`}
+                          rows={3}
+                          placeholder="Paste source code or upload file..."
+                          value={inputs?.source_code || ''}
+                          onChange={(e) =>
+                            onInputsChange({
+                              ...inputs,
+                              source_code: e.target.value,
+                            })
+                          }
                         />
-                      </label>
-                      {getErrorForField('source_code') && (
-                        <span className="text-xs text-red-600">{getErrorForField('source_code')}</span>
-                      )}
-                    </div>
+                        <div className="mt-1 flex items-center justify-between">
+                          <label className="cursor-pointer text-xs text-blue-600 hover:text-blue-700 flex items-center">
+                            <Upload className="h-3 w-3 mr-1" />
+                            Upload file
+                            <input
+                              type="file"
+                              className="hidden"
+                              accept=".py,.js,.ts,.java,.cpp,.c,.go,.rb,.php"
+                              onChange={(e) => handleFileUpload(e, 'source_code')}
+                            />
+                          </label>
+                          {getErrorForField('source_code') && (
+                            <span className="text-xs text-red-600">{getErrorForField('source_code')}</span>
+                          )}
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
 
@@ -392,37 +549,62 @@ function AgentCard({
                 {agent.required_inputs.includes('requirements_doc') && (
                   <div>
                     <label className="block text-xs font-medium text-gray-700 mb-1">
-                      Requirements Document {agent.required_inputs.includes('requirements_doc') && <span className="text-red-500">*</span>}
+                      Requirements Document <span className="text-red-500">*</span>
                     </label>
-                    <textarea
-                      className={`w-full px-3 py-2 text-sm border rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                        getErrorForField('requirements_doc') ? 'border-red-300' : 'border-gray-300'
-                      }`}
-                      rows={3}
-                      placeholder="Paste requirements or upload file..."
-                      value={inputs?.requirements_doc || ''}
-                      onChange={(e) =>
-                        onInputsChange({
-                          ...inputs,
-                          requirements_doc: e.target.value,
-                        })
-                      }
-                    />
-                    <div className="mt-1 flex items-center justify-between">
-                      <label className="cursor-pointer text-xs text-blue-600 hover:text-blue-700 flex items-center">
-                        <Upload className="h-3 w-3 mr-1" />
-                        Upload document
-                        <input
-                          type="file"
-                          className="hidden"
-                          accept=".txt,.md,.doc,.docx,.pdf"
-                          onChange={(e) => handleFileUpload(e, 'requirements_doc')}
+
+                    {uploadedFiles['requirements_doc'] ? (
+                      <div className="flex items-center justify-between p-2 bg-green-50 border border-green-200 rounded-md">
+                        <div className="flex items-center space-x-2 flex-1 min-w-0">
+                          <FileText className="h-4 w-4 text-green-600 flex-shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-xs font-medium text-green-900 truncate">
+                              {uploadedFiles['requirements_doc'].name}
+                            </div>
+                            <div className="text-xs text-green-600">
+                              {formatFileSize(uploadedFiles['requirements_doc'].size)}
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleFileRemove('requirements_doc')}
+                          className="ml-2 p-1 text-red-600 hover:bg-red-100 rounded"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <textarea
+                          className={`w-full px-3 py-2 text-sm border rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                            getErrorForField('requirements_doc') ? 'border-red-300' : 'border-gray-300'
+                          }`}
+                          rows={3}
+                          placeholder="Paste requirements or upload file..."
+                          value={inputs?.requirements_doc || ''}
+                          onChange={(e) =>
+                            onInputsChange({
+                              ...inputs,
+                              requirements_doc: e.target.value,
+                            })
+                          }
                         />
-                      </label>
-                      {getErrorForField('requirements_doc') && (
-                        <span className="text-xs text-red-600">{getErrorForField('requirements_doc')}</span>
-                      )}
-                    </div>
+                        <div className="mt-1 flex items-center justify-between">
+                          <label className="cursor-pointer text-xs text-blue-600 hover:text-blue-700 flex items-center">
+                            <Upload className="h-3 w-3 mr-1" />
+                            Upload document
+                            <input
+                              type="file"
+                              className="hidden"
+                              accept=".txt,.md,.doc,.docx,.pdf"
+                              onChange={(e) => handleFileUpload(e, 'requirements_doc')}
+                            />
+                          </label>
+                          {getErrorForField('requirements_doc') && (
+                            <span className="text-xs text-red-600">{getErrorForField('requirements_doc')}</span>
+                          )}
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
 
@@ -430,7 +612,7 @@ function AgentCard({
                 {agent.required_inputs.includes('endpoints') && (
                   <div>
                     <label className="block text-xs font-medium text-gray-700 mb-1">
-                      Endpoints (comma-separated) {agent.required_inputs.includes('endpoints') && <span className="text-red-500">*</span>}
+                      Endpoints (comma-separated) <span className="text-red-500">*</span>
                     </label>
                     <input
                       type="text"
@@ -463,28 +645,45 @@ function AgentCard({
                         <label className="block text-xs font-medium text-gray-700 mb-1">
                           FRD (Functional Requirements)
                         </label>
-                        <textarea
-                          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md"
-                          rows={2}
-                          placeholder="Paste FRD or upload..."
-                          value={inputs?.frd || ''}
-                          onChange={(e) =>
-                            onInputsChange({
-                              ...inputs,
-                              frd: e.target.value,
-                            })
-                          }
-                        />
-                        <label className="cursor-pointer text-xs text-blue-600 hover:text-blue-700 flex items-center mt-1">
-                          <Upload className="h-3 w-3 mr-1" />
-                          Upload FRD
-                          <input
-                            type="file"
-                            className="hidden"
-                            accept=".txt,.md,.doc,.docx,.pdf"
-                            onChange={(e) => handleFileUpload(e, 'frd')}
-                          />
-                        </label>
+                        {uploadedFiles['frd'] ? (
+                          <div className="flex items-center justify-between p-2 bg-green-50 border border-green-200 rounded-md">
+                            <div className="flex items-center space-x-2">
+                              <FileText className="h-4 w-4 text-green-600" />
+                              <span className="text-xs text-green-900">{uploadedFiles['frd'].name}</span>
+                            </div>
+                            <button
+                              onClick={() => handleFileRemove('frd')}
+                              className="p-1 text-red-600 hover:bg-red-100 rounded"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <textarea
+                              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md"
+                              rows={2}
+                              placeholder="Paste FRD or upload..."
+                              value={inputs?.frd || ''}
+                              onChange={(e) =>
+                                onInputsChange({
+                                  ...inputs,
+                                  frd: e.target.value,
+                                })
+                              }
+                            />
+                            <label className="cursor-pointer text-xs text-blue-600 hover:text-blue-700 flex items-center mt-1">
+                              <Upload className="h-3 w-3 mr-1" />
+                              Upload FRD
+                              <input
+                                type="file"
+                                className="hidden"
+                                accept=".txt,.md,.doc,.docx,.pdf"
+                                onChange={(e) => handleFileUpload(e, 'frd')}
+                              />
+                            </label>
+                          </>
+                        )}
                       </div>
                     )}
 
@@ -493,28 +692,45 @@ function AgentCard({
                         <label className="block text-xs font-medium text-gray-700 mb-1">
                           BRD (Business Requirements)
                         </label>
-                        <textarea
-                          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md"
-                          rows={2}
-                          placeholder="Paste BRD or upload..."
-                          value={inputs?.brd || ''}
-                          onChange={(e) =>
-                            onInputsChange({
-                              ...inputs,
-                              brd: e.target.value,
-                            })
-                          }
-                        />
-                        <label className="cursor-pointer text-xs text-blue-600 hover:text-blue-700 flex items-center mt-1">
-                          <Upload className="h-3 w-3 mr-1" />
-                          Upload BRD
-                          <input
-                            type="file"
-                            className="hidden"
-                            accept=".txt,.md,.doc,.docx,.pdf"
-                            onChange={(e) => handleFileUpload(e, 'brd')}
-                          />
-                        </label>
+                        {uploadedFiles['brd'] ? (
+                          <div className="flex items-center justify-between p-2 bg-green-50 border border-green-200 rounded-md">
+                            <div className="flex items-center space-x-2">
+                              <FileText className="h-4 w-4 text-green-600" />
+                              <span className="text-xs text-green-900">{uploadedFiles['brd'].name}</span>
+                            </div>
+                            <button
+                              onClick={() => handleFileRemove('brd')}
+                              className="p-1 text-red-600 hover:bg-red-100 rounded"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <textarea
+                              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md"
+                              rows={2}
+                              placeholder="Paste BRD or upload..."
+                              value={inputs?.brd || ''}
+                              onChange={(e) =>
+                                onInputsChange({
+                                  ...inputs,
+                                  brd: e.target.value,
+                                })
+                              }
+                            />
+                            <label className="cursor-pointer text-xs text-blue-600 hover:text-blue-700 flex items-center mt-1">
+                              <Upload className="h-3 w-3 mr-1" />
+                              Upload BRD
+                              <input
+                                type="file"
+                                className="hidden"
+                                accept=".txt,.md,.doc,.docx,.pdf"
+                                onChange={(e) => handleFileUpload(e, 'brd')}
+                              />
+                            </label>
+                          </>
+                        )}
                       </div>
                     )}
                   </div>
